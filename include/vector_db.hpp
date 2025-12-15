@@ -14,12 +14,14 @@ class VectorIndex  {
         // uses the fvecs standard.
         void load_fvecs(const std::string &filename);
 
-        void build_index(int num_clusters, int epochs = 10);
+        void build_index(int num_clusters, int epochs = 10, const std::string &metric = "eucl");
 
         //get vector by index.
         std::vector<float> get_vector(int index);
 
-        int search(const std::vector<float>& query);
+        void set_simd(bool enable);
+
+        int search(const std::vector<float>& query, const std::string &metric = "eucl");
     private:
         std::vector<std::vector<float>> database;
 
@@ -40,4 +42,6 @@ class VectorIndex  {
         // Maps [List_ID] -> [Vector ID, Vector ID, ...]
         //i.e inverted_lists[0] contains all vectors belonging to cluster 0.
         std::vector<std::vector<int>> inverted_lists; 
+
+        bool use_simd = false;
 };

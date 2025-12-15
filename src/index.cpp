@@ -1,4 +1,5 @@
 #include "vector_db.hpp"
+#include "metrics.hpp"
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -9,16 +10,17 @@
 #include <random>
 #include <algorithm>
 #include <numeric>
+#include<immintrin.h>
 
-float euclidean_dist(const std::vector<float> &a, const std::vector<float> &b){
-    float dist = 0.0f;
-    for(size_t i = 0; i < a.size(); i++){
-        float diff = a[i]-b[i];
-        dist += diff * diff;
+
+inline float compute_dist(const float* a, const float* b, int n, bool use_simd, const std::string& metric) {
+    if (metric == "cos") {
+        return use_simd ? cosine_dist_simd(a, b, n) : cosine_dist(a, b, n);
+    } else {
+        // Default to Euclidean
+        return use_simd ? euclidean_dist_simd(a, b, n) : euclidean_dist(a, b, n);
     }
-    return dist;
 }
-
 
 VectorIndex::VectorIndex(){
     std::cout << "VectorIndex Initialised!" << std::endl;
@@ -97,9 +99,13 @@ std::vector<float> VectorIndex::get_vector(int index) {
     return result;
 }
 
+void VectorIndex::set_simd(bool enable){
+    use_simd = enable;
+    std::cout << "SIMD activation status: " << (use_simd ? "Active" : "Inactive") << "\n";
+}
 
 //build the db index using k-means clustering
-void VectorIndex::build_index(int num_clusters, int epochs){
+void VectorIndex::build_index(int num_clusters, int epochs, const std::string &metric){
     if(num_vectors <  num_clusters){
         throw std::runtime_error("Not enough vectors to assign to clusters!");
     }
@@ -133,7 +139,7 @@ void VectorIndex::build_index(int num_clusters, int epochs){
 
             int best_c = -1;
             for(int c = 0; c < num_clusters; c++){
-                float d = euclidean_dist(vec, centroids[c]);
+                float d = compute_dist(vec.data(), centroids[c].data(), dim, use_simd, metric);
                 if(d < min_d){ 
                     min_d = d;
                     best_c = c;
@@ -205,12 +211,12 @@ void VectorIndex::build_index(int num_clusters, int epochs){
 //     return best_index;
 // }
 
-int VectorIndex::search(const std::vector<float> &query){
+int VectorIndex::search(const std::vector<float> &query, const std::string &metric){
     if(!is_indexed){
         float min_dist = std::numeric_limits<float>::max();
         int best_idx = -1;
         for(int i = 0; i < num_vectors; i++){
-            float d = euclidean_dist(get_vector(i), query);
+            float d = compute_dist(get_vector(i).data(), query.data(), dim, use_simd, metric);
             if(d < min_dist) {
                 min_dist = d;
                 best_idx = i;
@@ -222,7 +228,7 @@ int VectorIndex::search(const std::vector<float> &query){
         float min_c_dist = std::numeric_limits<float>::max();
         int best_c = -1;
         for(int c = 0; c < centroids.size(); c++){
-            float d = euclidean_dist(centroids[c], query);
+            float d = compute_dist(centroids[c].data(), query.data(), dim, use_simd, metric);
             if(d < min_c_dist){
                 min_c_dist = c;
                 best_c = c;
@@ -234,7 +240,7 @@ int VectorIndex::search(const std::vector<float> &query){
         
         const auto& bucket = inverted_lists[best_c];
         for (int vec_id : bucket) {
-            float d = euclidean_dist(get_vector(vec_id), query);
+            float d = compute_dist(get_vector(vec_id).data(), query.data(), dim, use_simd, metric);
             if (d < min_dist) { min_dist = d; best_idx = vec_id; }
         }
         return best_idx;

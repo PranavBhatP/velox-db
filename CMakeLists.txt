@@ -1,12 +1,10 @@
 cmake_minimum_required(VERSION 3.15)
 project(VeloxDB VERSION 0.1.0 LANGUAGES CXX)
 
-# setup cpp standard and position independent code (for cross-platform compatibility)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# download pybind11
 include(FetchContent)
 FetchContent_Declare(
   pybind11
@@ -15,16 +13,24 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(pybind11)
 
-# core engine in cpp
 add_library(veloxdb_core SHARED
     src/index.cpp
+    src/metrics.cpp
 )
+
+if(MSVC)
+    target_compile_options(veloxdb_core PRIVATE /arch:AVX2 /O2)
+else()
+    #-O3 for max optimization, -mavx2 for SIMD, -mfma for Fused Multiply-Add
+    target_compile_options(veloxdb_core PRIVATE -O3 -mavx2 -mfma)
+endif()
+
 target_include_directories(veloxdb_core PUBLIC include)
 
-# python module interface with core cpp module.
 pybind11_add_module(veloxdb 
     bindings/python_bindings.cpp
 )
 
 target_link_libraries(veloxdb PRIVATE veloxdb_core)
-message(STATUS "Build setup for VeloxDB complete.")
+
+message(STATUS "Build setup for VeloxDB complete (AVX2 Enabled).")
