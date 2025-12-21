@@ -16,6 +16,11 @@ class VectorIndex  {
 
         void build_index(int num_clusters, int epochs = 10, const std::string &metric = "eucl");
 
+        //save ram data to disk and brought back with mmap
+        void write_fvecs(const std::string &filename);
+        void save_index(const std::string &filename);
+        void load_index(const std::string &filename);
+
         //get vector by index.
         std::vector<float> get_vector(int index);
 

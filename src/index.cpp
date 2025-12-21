@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <numeric>
 #include<immintrin.h>
+#include<fstream>
 
 
 inline float compute_dist(const float* a, const float* b, int n, bool use_simd, const std::string& metric) {
@@ -28,8 +29,7 @@ VectorIndex::VectorIndex(){
 
 VectorIndex::~VectorIndex(){
     if(use_mmap && mmap_ptr != nullptr){
-        munmap(mmap_ptr, mmap_size); // system call unmap pages of memory.
-        std::cout<<"[VeloxDB] memory unmapped and cleaned!" << std::endl;
+        munmap(mmap_ptr, mmap_size);
     }
 }
 
@@ -37,6 +37,13 @@ void VectorIndex::add_vector(const std::vector<float> &vec){
     if(use_mmap){
         throw std::runtime_error("Cannot add vectors to a read-only mmap index!");
     }
+
+    if(database.empty()){
+        dim = vec.size();
+    } else if (vec.size() != dim) {
+        throw std::runtime_error("Vector dimension mismatch!");
+    }
+
     database.push_back(vec);
     num_vectors++;
 }
@@ -77,6 +84,83 @@ void VectorIndex::load_fvecs(const std::string& filename){
     std :: cout << "[VeloxDB] Loaded successfully! " << num_vectors << " vectors (dim = " << dim << ") using mmap." << std::endl;
 }
 
+void VectorIndex::write_fvecs(const std::string &filename){
+    if(use_mmap) throw std::runtime_error("Already using mmap, cannot export to store in memory");
+    if(database.empty()) throw std::runtime_error("No data to write");
+
+    std::ofstream outfile(filename, std::ios::binary);
+    if(!outfile) throw std::runtime_error("File cannot be opened");
+
+    for(const auto& vec: database){
+        int d = vec.size();
+        outfile.write(reinterpret_cast<const char*>(&d), sizeof(int)); //header for the vector (denoting dimension)
+        outfile.write(reinterpret_cast<const char*>(vec.data()), d* sizeof(float));//actual data stored in vector
+    }
+
+    outfile.close();
+    std::cout << "File has been written successfully!" << std::endl;
+}
+
+void VectorIndex::save_index(const std::string &filename){
+    if(!is_indexed) throw std::runtime_error("No index to save from!");
+
+    std::ofstream out(filename, std::ios::binary);
+    if(!out) throw std::runtime_error("o/p file cannot be opened.");
+
+    //first 8 bytes are metadata.
+    int num_clusters = centroids.size();
+    //casting should not static - no valid conversion path from float to char.
+    out.write(reinterpret_cast<const char*>(&num_clusters),sizeof(int)); 
+    out.write(reinterpret_cast<const char*>(&dim), sizeof(int));
+
+    for(const auto& c:centroids){
+        out.write(reinterpret_cast<const char*>(c.data()), dim*sizeof(float));
+    }
+
+    for(const auto & lst: inverted_lists){
+        int lst_size = lst.size();
+        out.write(reinterpret_cast<const char*>(&lst_size), sizeof(int));
+        out.write(reinterpret_cast<const char*>(lst.data()), lst_size * sizeof(int)); //int->int mapping.
+    }
+    out.close();
+    std::cout << "Index saved to: " << filename << std::endl;
+}
+
+void VectorIndex::load_index(const std::string &filename){
+    std::ifstream in(filename, std::ios::binary);
+    if(!in) throw std::runtime_error("Cannot open index file!");
+
+    int num_clusters;
+    int loaded_dim;
+
+    in.read(reinterpret_cast<char*>(&num_clusters), sizeof(int));
+    in.read(reinterpret_cast<char*>(&loaded_dim), sizeof(int));
+
+    if(loaded_dim == 0){
+        throw std::runtime_error("Zero dims in index file!!");
+    }
+    std::cout << "Expected dim: " << dim << ", Loaded dim: " << loaded_dim << std::endl;
+    if(loaded_dim == 0 || loaded_dim != dim){
+        throw std::runtime_error("Dimension mismatch between data and index file!");
+    }
+
+    centroids.resize(num_clusters);
+    for(int i = 0; i < num_clusters; i++){
+        centroids[i].resize(loaded_dim);
+        in.read(reinterpret_cast<char*>(centroids[i].data()), loaded_dim*sizeof(float));
+    }
+    inverted_lists.resize(num_clusters);
+    for (int i = 0; i < num_clusters; ++i) {
+        int list_size;
+        in.read(reinterpret_cast<char*>(&list_size),sizeof(int));
+        inverted_lists[i].resize(list_size);
+        in.read(reinterpret_cast<char*>(inverted_lists[i].data()), list_size* sizeof(int));
+    }
+
+    is_indexed = true;
+    std::cout << "Index loaded: " << num_clusters<< " clusters" << std::endl;
+}
+
 
 std::vector<float> VectorIndex::get_vector(int index) {
     if(index < 0 || index >= num_vectors){
@@ -93,7 +177,8 @@ std::vector<float> VectorIndex::get_vector(int index) {
 
     // pointer to the start of the vector we want.
     char* vec_start = base + (index * row_size_bytes) + sizeof(int);
-    float* vec_data = reinterpret_cast<float*>(vec_start);
+    float* vec_data = reinterpret_cast<float*>(vec_start); //use reintrepret cast for raw memory intrpretations - like reading a 
+    // binary file or smthin - changes the way the compiler looks at the memory andf can be dangerous unless used properly.
     
     std::vector<float> result(vec_data, vec_data + dim);
     return result;

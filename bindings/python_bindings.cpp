@@ -15,6 +15,9 @@ PYBIND11_MODULE(veloxdb, m) {
         .def("get_vector", &VectorIndex::get_vector, "Retrieve a vector by integer ID")
         .def("build_index", &VectorIndex::build_index, " Build IVF Index for ANN search using K-Means Clustering."
         , py::arg("num_clusters"), py::arg("max_iters")=10, py::arg("metric")="eucl")
+        .def("write_fvecs", &VectorIndex::write_fvecs, "Export RAM vectors to disk")
+        .def("save_index", &VectorIndex::save_index, "Save IVF index to fvecs")
+        .def("load_index", &VectorIndex::load_index, "Load IVF index")
         .def("set_simd", &VectorIndex::set_simd)
         .def("search", &VectorIndex::search, 
              py::arg("query"), py::arg("metric") = "eucl");
