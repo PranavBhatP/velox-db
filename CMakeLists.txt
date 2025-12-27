@@ -13,7 +13,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(pybind11)
 
-add_library(veloxdb_core SHARED
+add_library(veloxdb_core STATIC
     src/index.cpp
     src/metrics.cpp
 )
@@ -34,3 +34,4 @@ pybind11_add_module(veloxdb
 target_link_libraries(veloxdb PRIVATE veloxdb_core)
 
 message(STATUS "Build setup for VeloxDB complete (AVX2 Enabled).")
+install(TARGETS veloxdb DESTINATION .)

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["scikit-build-core", "pybind11", "cmake
+"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "veloxdb"
+version = "0.1.0"
+description = "A high performance embedded vector database written in C++ with AVX2 Support"
+readme = "README.md"
+authors = [
+    { name = "Pranav Bhat", email = "pranavbhat2004@gmail.com"}
+]
+requires-python = ">=3.9"
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C++",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[tool.scikit-build]
+# This ensures the generated .so/.pyd file is installed in the right place
+wheel.expand-macos-universal-tags = true
