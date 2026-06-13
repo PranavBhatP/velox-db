@@ -86,12 +86,44 @@ db_loaded.load_fvecs("vectors.fvecs")
 db_loaded.load_index("index.ivf")
 ```
 
+### Web UI (Next.js)
+
+A browser UI for ingesting text, training the IVF index, searching by similarity, and saving state.
+
+**1. Build and install the core library and server dependencies:**
+
+```bash
+pip install -e .
+pip install -e ".[server]"
+```
+
+**2. Start the API** (from the repository root):
+
+```bash
+python -m server.main
+```
+
+The API listens on `http://localhost:8000`. On first document ingest, sentence-transformers downloads `all-MiniLM-L6-v2` (~80MB).
+
+**3. Start the frontend:**
+
+```bash
+cd web
+cp .env.example .env.local   # optional: set NEXT_PUBLIC_API_URL
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`. Routes: Dashboard, Ingest, Search, Train index, Documents, Settings.
+
+**Note:** If you have older sample data with a different vector dimension (e.g. 5-D demo vectors), clear the `data/` directory before using text embeddings (384 dimensions).
+
 ### Using the REST API Server
 
 Start the FastAPI server:
 
 ```bash
-python server/main.py
+python -m server.main
 ```
 
 The server will be available at `http://localhost:8000`. Example API calls:
@@ -107,7 +139,12 @@ curl -X POST http://localhost:8000/train \
   -H "Content-Type: application/json" \
   -d '{"num_clusters": 10, "max_iters": 20, "metric": "eucl"}'
 
-# Search for similar vectors
+# Search by text (semantic)
+curl -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"query_text": "example query", "metric": "eucl"}'
+
+# Search by raw vector
 curl -X POST http://localhost:8000/search \
   -H "Content-Type: application/json" \
   -d '{"query_vector": [1.1, 2.1, 3.1, 4.1, 5.1], "metric": "eucl"}'
@@ -253,11 +290,16 @@ class VectorIndex:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Health check |
-| `/add_vectors` | POST | Add a new vector |
+| `/` or `/health` | GET | Health check and stats (`vector_count`, `dim`, `is_indexed`) |
+| `/documents` | POST | Embed text and store vector + metadata |
+| `/documents/batch` | POST | Bulk ingest (up to 100 texts) |
+| `/documents` | GET | List documents (paginated) |
+| `/documents/{id}` | GET | Get document text and vector preview |
+| `/embed` | POST | Embed text only (no store) |
+| `/add_vectors` | POST | Add a raw float vector |
 | `/train` | POST | Build/train the IVF index |
-| `/search` | POST | Search for nearest neighbors |
-| `/save` | POST | Persist database and index to disk |
+| `/search` | POST | Search by `query_text` or `query_vector` |
+| `/save` | POST | Persist database, index, and metadata to disk |
 
 ## Advanced Configuration
 
@@ -297,11 +339,18 @@ The database will efficiently page data from disk as needed.
 git clone https://github.com/PranavBhatP/velox-db.git
 cd velox-db
 
-# Install in editable mode
+# Install in editable mode (builds C++ extension)
 pip install -e .
 
-# Run tests
+# Optional: API server + embeddings for the web UI
+pip install -e ".[server]"
+
+# Run C++ / Python API tests
 python tests/api/test_script.py
+
+# Run API + web UI locally
+python -m server.main          # terminal 1 — http://localhost:8000
+cd web && npm install && npm run dev   # terminal 2 — http://localhost:3000
 ```
 
 ## Contributing
