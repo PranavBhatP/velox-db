@@ -10,325 +10,367 @@
 #include <random>
 #include <algorithm>
 #include <numeric>
-#include<immintrin.h>
-#include<fstream>
+#include <queue>
+#include <immintrin.h>
+#include <fstream>
+#include <mutex>
 
+// Magic bytes written at the start of every .ivf file so we can detect stale
+// or corrupted index files instead of silently misreading them.
+static constexpr uint32_t VELOX_MAGIC   = 0x564C5846; // 'V','L','X','F'
+static constexpr uint16_t VELOX_VERSION = 1;
 
-inline float compute_dist(const float* a, const float* b, int n, bool use_simd, const std::string& metric) {
-    if (metric == "cos") {
+inline float compute_dist(const float* a, const float* b, int n,
+                           bool use_simd, const std::string& metric) {
+    if (metric == "cos")
         return use_simd ? cosine_dist_simd(a, b, n) : cosine_dist(a, b, n);
-    } else {
-        // Default to Euclidean
-        return use_simd ? euclidean_dist_simd(a, b, n) : euclidean_dist(a, b, n);
-    }
+    return use_simd ? euclidean_dist_simd(a, b, n) : euclidean_dist(a, b, n);
 }
 
-VectorIndex::VectorIndex(){
-    std::cout << "VectorIndex Initialised!" << std::endl;
+VectorIndex::VectorIndex() {
+    std::cout << "VectorIndex initialised!\n";
 }
 
-VectorIndex::~VectorIndex(){
-    if(use_mmap && mmap_ptr != nullptr){
+VectorIndex::~VectorIndex() {
+    if (use_mmap && mmap_ptr != nullptr)
         munmap(mmap_ptr, mmap_size);
-    }
 }
 
-void VectorIndex::add_vector(const std::vector<float> &vec){
-    if(use_mmap){
-        throw std::runtime_error("Cannot add vectors to a read-only mmap index!");
-    }
+// ---------------------------------------------------------------------------
+// raw_vec_ptr — zero-copy pointer to vector i's float data.
+// Caller must hold rw_mutex (shared or exclusive).
+// ---------------------------------------------------------------------------
+const float* VectorIndex::raw_vec_ptr(int index) const {
+    if (!use_mmap)
+        return flat_database.data() + index * dim;
 
-    if(database.empty()){
-        dim = vec.size();
-    } else if (vec.size() != dim) {
-        throw std::runtime_error("Vector dimension mismatch!");
-    }
+    const char* base = static_cast<const char*>(mmap_ptr);
+    size_t row_bytes = sizeof(int) + dim * sizeof(float);
+    return reinterpret_cast<const float*>(base + index * row_bytes + sizeof(int));
+}
 
-    database.push_back(vec);
+std::vector<float> VectorIndex::get_vector_nolock(int index) const {
+    if (index < 0 || index >= num_vectors)
+        throw std::out_of_range("Index out of bounds");
+    const float* p = raw_vec_ptr(index);
+    return std::vector<float>(p, p + dim);
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+void VectorIndex::add_vector(const std::vector<float>& vec) {
+    std::unique_lock lock(rw_mutex);
+    if (use_mmap)
+        throw std::runtime_error("Cannot add vectors to a read-only mmap index.");
+    if (num_vectors == 0) {
+        dim = static_cast<int>(vec.size());
+    } else if (static_cast<int>(vec.size()) != dim) {
+        throw std::runtime_error("Vector dimension mismatch.");
+    }
+    flat_database.insert(flat_database.end(), vec.begin(), vec.end());
     num_vectors++;
 }
 
-void VectorIndex::load_fvecs(const std::string& filename){
+void VectorIndex::load_fvecs(const std::string& filename) {
+    std::unique_lock lock(rw_mutex);
     int fd = open(filename.c_str(), O_RDONLY);
-    if(fd==-1){
-        throw std::runtime_error("Could not open file:" + filename);
-    }
+    if (fd == -1)
+        throw std::runtime_error("Could not open file: " + filename);
 
     struct stat sb;
-    if(fstat(fd,&sb)==-1){
+    if (fstat(fd, &sb) == -1) {
         close(fd);
-        throw std::runtime_error("Could not read file sizes: " + filename);
+        throw std::runtime_error("Could not stat file: " + filename);
     }
 
     mmap_size = sb.st_size;
-    // use PROT_READ for  read protections on the file.
     mmap_ptr = mmap(nullptr, mmap_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
 
-    close(fd); //file is now in memory.
+    if (mmap_ptr == MAP_FAILED)
+        throw std::runtime_error("mmap failed.");
 
-    if(mmap_ptr == MAP_FAILED){
-        throw std::runtime_error("mmap failed!!");
-    }
-
-    // parse the header of a page (first 4 bytes (int) tells use the dimension)
-    data_ptr = static_cast<float*>(mmap_ptr);
-    int* header = static_cast<int*>(mmap_ptr);
+    const int* header = static_cast<const int*>(mmap_ptr);
     dim = header[0];
-
-    //calculate the no. of vecs.
-    // size of a single vector is =  bytes (header) + dim * 4 bytes (for each dim)
-    size_t row_size_bytes = sizeof(int) + (dim * sizeof(float)); 
-    num_vectors = mmap_size / row_size_bytes;
-    
+    size_t row_bytes = sizeof(int) + dim * sizeof(float);
+    num_vectors = static_cast<int>(mmap_size / row_bytes);
     use_mmap = true;
-    std :: cout << "[VeloxDB] Loaded successfully! " << num_vectors << " vectors (dim = " << dim << ") using mmap." << std::endl;
+
+    std::cout << "[VeloxDB] Loaded " << num_vectors
+              << " vectors (dim=" << dim << ") via mmap.\n";
 }
 
-void VectorIndex::write_fvecs(const std::string &filename){
-    if(use_mmap) throw std::runtime_error("Already using mmap, cannot export to store in memory");
-    if(database.empty()) throw std::runtime_error("No data to write");
-
-    std::ofstream outfile(filename, std::ios::binary);
-    if(!outfile) throw std::runtime_error("File cannot be opened");
-
-    for(const auto& vec: database){
-        int d = vec.size();
-        outfile.write(reinterpret_cast<const char*>(&d), sizeof(int)); //header for the vector (denoting dimension)
-        outfile.write(reinterpret_cast<const char*>(vec.data()), d* sizeof(float));//actual data stored in vector
-    }
-
-    outfile.close();
-    std::cout << "File has been written successfully!" << std::endl;
-}
-
-void VectorIndex::save_index(const std::string &filename){
-    if(!is_indexed) throw std::runtime_error("No index to save from!");
+void VectorIndex::write_fvecs(const std::string& filename) {
+    std::shared_lock lock(rw_mutex);
+    if (use_mmap)
+        throw std::runtime_error("Already using mmap; cannot export in-memory data.");
+    if (num_vectors == 0)
+        throw std::runtime_error("No data to write.");
 
     std::ofstream out(filename, std::ios::binary);
-    if(!out) throw std::runtime_error("o/p file cannot be opened.");
+    if (!out) throw std::runtime_error("Cannot open output file.");
 
-    //first 8 bytes are metadata.
-    int num_clusters = centroids.size();
-    //casting should not static - no valid conversion path from float to char.
-    out.write(reinterpret_cast<const char*>(&num_clusters),sizeof(int)); 
-    out.write(reinterpret_cast<const char*>(&dim), sizeof(int));
-
-    for(const auto& c:centroids){
-        out.write(reinterpret_cast<const char*>(c.data()), dim*sizeof(float));
-    }
-
-    for(const auto & lst: inverted_lists){
-        int lst_size = lst.size();
-        out.write(reinterpret_cast<const char*>(&lst_size), sizeof(int));
-        out.write(reinterpret_cast<const char*>(lst.data()), lst_size * sizeof(int)); //int->int mapping.
+    for (int i = 0; i < num_vectors; i++) {
+        out.write(reinterpret_cast<const char*>(&dim), sizeof(int));
+        out.write(reinterpret_cast<const char*>(flat_database.data() + i * dim),
+                  dim * sizeof(float));
     }
     out.close();
-    std::cout << "Index saved to: " << filename << std::endl;
+    std::cout << "Wrote " << num_vectors << " vectors to " << filename << "\n";
 }
 
-void VectorIndex::load_index(const std::string &filename){
+// ---------------------------------------------------------------------------
+// save_index / load_index — versioned binary format with magic bytes.
+// Old .ivf files (no magic) will be rejected rather than misread.
+// ---------------------------------------------------------------------------
+
+void VectorIndex::save_index(const std::string& filename) {
+    std::shared_lock lock(rw_mutex);
+    if (!is_indexed)
+        throw std::runtime_error("No index to save.");
+
+    std::ofstream out(filename, std::ios::binary);
+    if (!out) throw std::runtime_error("Cannot open output file.");
+
+    out.write(reinterpret_cast<const char*>(&VELOX_MAGIC),   sizeof(uint32_t));
+    out.write(reinterpret_cast<const char*>(&VELOX_VERSION), sizeof(uint16_t));
+
+    int num_clusters = static_cast<int>(centroids.size());
+    out.write(reinterpret_cast<const char*>(&num_clusters), sizeof(int));
+    out.write(reinterpret_cast<const char*>(&dim),          sizeof(int));
+
+    for (const auto& c : centroids)
+        out.write(reinterpret_cast<const char*>(c.data()), dim * sizeof(float));
+
+    for (const auto& lst : inverted_lists) {
+        int sz = static_cast<int>(lst.size());
+        out.write(reinterpret_cast<const char*>(&sz),       sizeof(int));
+        out.write(reinterpret_cast<const char*>(lst.data()), sz * sizeof(int));
+    }
+
+    out.close();
+    std::cout << "Index saved to " << filename << "\n";
+}
+
+void VectorIndex::load_index(const std::string& filename) {
+    std::unique_lock lock(rw_mutex);
     std::ifstream in(filename, std::ios::binary);
-    if(!in) throw std::runtime_error("Cannot open index file!");
+    if (!in) throw std::runtime_error("Cannot open index file.");
 
-    int num_clusters;
-    int loaded_dim;
+    uint32_t magic;
+    uint16_t version;
+    in.read(reinterpret_cast<char*>(&magic),   sizeof(uint32_t));
+    in.read(reinterpret_cast<char*>(&version), sizeof(uint16_t));
 
+    if (magic != VELOX_MAGIC)
+        throw std::runtime_error(
+            "Not a VeloxDB index file (bad magic bytes). "
+            "Delete the .ivf file and retrain.");
+    if (version != VELOX_VERSION)
+        throw std::runtime_error(
+            "Unsupported index version: " + std::to_string(version));
+
+    int num_clusters, loaded_dim;
     in.read(reinterpret_cast<char*>(&num_clusters), sizeof(int));
-    in.read(reinterpret_cast<char*>(&loaded_dim), sizeof(int));
+    in.read(reinterpret_cast<char*>(&loaded_dim),   sizeof(int));
 
-    if(loaded_dim == 0){
-        throw std::runtime_error("Zero dims in index file!!");
-    }
-    std::cout << "Expected dim: " << dim << ", Loaded dim: " << loaded_dim << std::endl;
-    if(loaded_dim == 0 || loaded_dim != dim){
-        throw std::runtime_error("Dimension mismatch between data and index file!");
-    }
+    if (loaded_dim == 0 || loaded_dim != dim)
+        throw std::runtime_error(
+            "Dimension mismatch: data dim=" + std::to_string(dim) +
+            ", index dim=" + std::to_string(loaded_dim));
 
     centroids.resize(num_clusters);
-    for(int i = 0; i < num_clusters; i++){
+    for (int i = 0; i < num_clusters; i++) {
         centroids[i].resize(loaded_dim);
-        in.read(reinterpret_cast<char*>(centroids[i].data()), loaded_dim*sizeof(float));
+        in.read(reinterpret_cast<char*>(centroids[i].data()), loaded_dim * sizeof(float));
     }
+
     inverted_lists.resize(num_clusters);
-    for (int i = 0; i < num_clusters; ++i) {
-        int list_size;
-        in.read(reinterpret_cast<char*>(&list_size),sizeof(int));
-        inverted_lists[i].resize(list_size);
-        in.read(reinterpret_cast<char*>(inverted_lists[i].data()), list_size* sizeof(int));
+    for (int i = 0; i < num_clusters; i++) {
+        int sz;
+        in.read(reinterpret_cast<char*>(&sz), sizeof(int));
+        inverted_lists[i].resize(sz);
+        in.read(reinterpret_cast<char*>(inverted_lists[i].data()), sz * sizeof(int));
     }
 
     is_indexed = true;
-    std::cout << "Index loaded: " << num_clusters<< " clusters" << std::endl;
+    std::cout << "Index loaded: " << num_clusters << " clusters\n";
 }
-
 
 std::vector<float> VectorIndex::get_vector(int index) {
-    if(index < 0 || index >= num_vectors){
-        throw std::out_of_range("Index out of bounds");
-    }
-    
-    if(!use_mmap){
-        return database[index];
-    }
-
-    // calculate the offset.
-    char* base = static_cast<char*> (mmap_ptr); // convert void ptr to character for byte level access.
-    size_t row_size_bytes = sizeof(int) + (dim * sizeof(float));
-
-    // pointer to the start of the vector we want.
-    char* vec_start = base + (index * row_size_bytes) + sizeof(int);
-    float* vec_data = reinterpret_cast<float*>(vec_start); //use reintrepret cast for raw memory intrpretations - like reading a 
-    // binary file or smthin - changes the way the compiler looks at the memory andf can be dangerous unless used properly.
-    
-    std::vector<float> result(vec_data, vec_data + dim);
-    return result;
+    std::shared_lock lock(rw_mutex);
+    return get_vector_nolock(index);
 }
 
-void VectorIndex::set_simd(bool enable){
+void VectorIndex::set_simd(bool enable) {
+    std::unique_lock lock(rw_mutex);
     use_simd = enable;
-    std::cout << "SIMD activation status: " << (use_simd ? "Active" : "Inactive") << "\n";
+    std::cout << "SIMD: " << (use_simd ? "enabled" : "disabled") << "\n";
 }
 
-//build the db index using k-means clustering
-void VectorIndex::build_index(int num_clusters, int epochs, const std::string &metric){
-    if(num_vectors <  num_clusters){
-        throw std::runtime_error("Not enough vectors to assign to clusters!");
+// ---------------------------------------------------------------------------
+// build_index — K-Means IVF training.
+//
+// Key optimisations vs the original:
+//  1. Pre-caches all vectors into a flat buffer before training starts.
+//     This avoids O(N × epochs × k) heap allocations from get_vector() in
+//     the hot loop, and makes mmap-backed data cache-friendly.
+//  2. Uses raw float pointers throughout — no temporary std::vector per step.
+// ---------------------------------------------------------------------------
+void VectorIndex::build_index(int num_clusters, int epochs,
+                               const std::string& metric) {
+    std::unique_lock lock(rw_mutex);
+    if (num_vectors < num_clusters)
+        throw std::runtime_error("Not enough vectors to fill " +
+                                 std::to_string(num_clusters) + " clusters.");
+
+    std::cout << "Training IVF index: " << num_clusters
+              << " clusters, " << epochs << " epochs.\n";
+
+    // Pre-cache all vectors in a flat contiguous buffer.
+    // For in-memory storage this is zero-cost (flat_database is already flat).
+    // For mmap it avoids per-iteration page-fault + allocation overhead.
+    const float* raw_data;
+    std::vector<float> mmap_cache;
+
+    if (!use_mmap) {
+        raw_data = flat_database.data();
+    } else {
+        mmap_cache.resize(static_cast<size_t>(num_vectors) * dim);
+        for (int i = 0; i < num_vectors; i++) {
+            const float* src = raw_vec_ptr(i);
+            std::copy(src, src + dim, mmap_cache.data() + i * dim);
+        }
+        raw_data = mmap_cache.data();
     }
 
-    std::cout << "Training the IVF Index with " << num_clusters << "clusters." << '\n';
-
-    //pick k random vectors from your data to represent centroids.
-    centroids.resize(num_clusters);
-    std::vector<int> indices(num_vectors); // table for assigning indices to vectors.
+    // Random initialisation: shuffle indices and pick first num_clusters.
+    std::vector<int> indices(num_vectors);
     std::iota(indices.begin(), indices.end(), 0);
+    std::mt19937 g(std::random_device{}());
+    std::shuffle(indices.begin(), indices.end(), g);
 
-
-    //non-deterministic random number generator (truly unpredictable).
-    std::random_device rd;
-    std::mt19937 g(rd());
-    std::shuffle(indices.begin(),indices.end(), g);
-    
-    for(int i = 0; i < num_clusters; i++){
-        centroids[i] = get_vector(indices[i]);
+    centroids.resize(num_clusters);
+    for (int i = 0; i < num_clusters; i++) {
+        const float* src = raw_data + indices[i] * dim;
+        centroids[i].assign(src, src + dim);
     }
 
-    std::vector<int> assignments(num_vectors); //maps vectors->centroid.
-    
-    for(int it = 0; it < epochs; ++it){
-        std::vector<std::vector<float>> new_centroids(num_clusters, std::vector<float>(dim, 0.0f));
+    std::vector<int> assignments(num_vectors);
+
+    for (int it = 0; it < epochs; it++) {
+        // Flat centroid accumulator — avoids row-of-rows scatter during update.
+        std::vector<float> new_centroids(num_clusters * dim, 0.0f);
         std::vector<int> counts(num_clusters, 0);
 
-        for(int i = 0; i < num_vectors; i++){
-            std::vector<float> vec = get_vector(i);
+        for (int i = 0; i < num_vectors; i++) {
+            const float* vec = raw_data + i * dim;
             float min_d = std::numeric_limits<float>::max();
-
             int best_c = -1;
-            for(int c = 0; c < num_clusters; c++){
-                float d = compute_dist(vec.data(), centroids[c].data(), dim, use_simd, metric);
-                if(d < min_d){ 
-                    min_d = d;
-                    best_c = c;
-                }
+
+            for (int c = 0; c < num_clusters; c++) {
+                float d = compute_dist(vec, centroids[c].data(), dim, use_simd, metric);
+                if (d < min_d) { min_d = d; best_c = c; }
             }
 
             assignments[i] = best_c;
-
-            for(int d = 0;d < dim; d++){
-                new_centroids[best_c][d] += vec[d]; // sum across all the vectors whose best_c is c.
-            }
+            float* acc = new_centroids.data() + best_c * dim;
+            for (int d = 0; d < dim; d++) acc[d] += vec[d];
             counts[best_c]++;
         }
-        //take average of all the sum and assign these values to centrodi.
-        for(int c = 0; c < num_clusters; c++){
-            if(counts[c] > 0){
-                for(int d = 0; d < dim; d++) centroids[c][d] = new_centroids[c][d] / counts[c];
+
+        for (int c = 0; c < num_clusters; c++) {
+            if (counts[c] > 0) {
+                float inv = 1.0f / counts[c];
+                float* src = new_centroids.data() + c * dim;
+                for (int d = 0; d < dim; d++) centroids[c][d] = src[d] * inv;
             }
         }
 
-        std::cout << "KMeans epoch[" << it + 1 << "/" << epochs << "] completed." << '\n'; 
+        std::cout << "KMeans epoch [" << it + 1 << "/" << epochs << "] done.\n";
     }
 
     inverted_lists.clear();
     inverted_lists.resize(num_clusters);
-    for(int i = 0; i < num_vectors; i++){
+    for (int i = 0; i < num_vectors; i++)
         inverted_lists[assignments[i]].push_back(i);
-    }
 
-    is_indexed=true;
-    std::cout << "Indexing complete!\n";
+    is_indexed = true;
+    std::cout << "Indexing complete.\n";
 }
 
-// old code which uses brute force in two methods - in-memory vector and one using pointers and mmap.
-// int VectorIndex::search(const std::vector<float> &query){
-//     int best_index = -1;
-//     float min_dist = std::numeric_limits<float>::max();
+// ---------------------------------------------------------------------------
+// search — ANN with IVF + nprobe, returning top-k results.
+//
+// Algorithm:
+//  1. Validate query dimension.
+//  2. If no index: brute-force over all vectors.
+//     If indexed: score all centroids, sort, pick top-nprobe clusters.
+//  3. Scan candidate vectors; maintain a max-heap of size k.
+//     Heap top = worst of the best-k seen so far; prune anything worse.
+//  4. Return results sorted nearest-first.
+//
+// Complexity (indexed): O(C·d) centroid scan + O(nprobe·(N/C)·d) bucket scan
+//   + O(candidates·log k) heap ops, where C = num_clusters.
+// ---------------------------------------------------------------------------
+std::vector<std::pair<int, float>> VectorIndex::search(
+    const std::vector<float>& query, int k, int nprobe,
+    const std::string& metric)
+{
+    if (static_cast<int>(query.size()) != dim)
+        throw std::runtime_error(
+            "Query dim=" + std::to_string(query.size()) +
+            " != index dim=" + std::to_string(dim));
 
-//     int cnt = use_mmap ? num_vectors : database.size();
+    std::shared_lock lock(rw_mutex);
 
-//     for(size_t i = 0; i < cnt; i++){
-//         float dist = 0.0f;
+    const float* qdata = query.data();
+    std::vector<int> candidates;
 
-//         if(use_mmap){
-//             char* base = static_cast<char*>(mmap_ptr);
-//             size_t row_size_bytes = sizeof(int) + (dim*sizeof(float));
-//             char* vec_start = base + (i*row_size_bytes) + sizeof(int);
-//             float* vec_data = reinterpret_cast<float*>(vec_start);
-
-//             for(int j = 0; j < dim; j++){
-//                 float diff = vec_data[j] - query[j];
-//                 dist += diff*diff;
-//             }
-
-//         } else {
-//             const auto& vec = database[i];
-//             for(size_t j = 0; j < vec.size(); j++){
-//                 float diff = vec[j]-query[j];
-//                 dist += diff*diff;
-//             }
-//         }
-        
-
-//         if(dist < min_dist){
-//             min_dist = dist;
-//             best_index = i;
-//         }
-//     }
-//     return best_index;
-// }
-
-int VectorIndex::search(const std::vector<float> &query, const std::string &metric){
-    if(!is_indexed){
-        float min_dist = std::numeric_limits<float>::max();
-        int best_idx = -1;
-        for(int i = 0; i < num_vectors; i++){
-            float d = compute_dist(get_vector(i).data(), query.data(), dim, use_simd, metric);
-            if(d < min_dist) {
-                min_dist = d;
-                best_idx = i;
-            }
-        }
-        return best_idx;
+    if (!is_indexed) {
+        candidates.resize(num_vectors);
+        std::iota(candidates.begin(), candidates.end(), 0);
     } else {
-        //ivf search
-        float min_c_dist = std::numeric_limits<float>::max();
-        int best_c = -1;
-        for(int c = 0; c < centroids.size(); c++){
-            float d = compute_dist(centroids[c].data(), query.data(), dim, use_simd, metric);
-            if(d < min_c_dist){
-                min_c_dist = c;
-                best_c = c;
-            }            
+        // Score all centroids and pick the top-nprobe.
+        std::vector<std::pair<float, int>> cdists;
+        cdists.reserve(centroids.size());
+        for (int c = 0; c < static_cast<int>(centroids.size()); c++) {
+            float d = compute_dist(centroids[c].data(), qdata, dim, use_simd, metric);
+            cdists.emplace_back(d, c);
         }
-        //fine search on best_c centroid's vectors.
-        float min_dist = std::numeric_limits<float>::max();
-        int best_idx = -1;
-        
-        const auto& bucket = inverted_lists[best_c];
-        for (int vec_id : bucket) {
-            float d = compute_dist(get_vector(vec_id).data(), query.data(), dim, use_simd, metric);
-            if (d < min_dist) { min_dist = d; best_idx = vec_id; }
-        }
-        return best_idx;
+
+        int np = std::min(nprobe, static_cast<int>(centroids.size()));
+        std::partial_sort(cdists.begin(), cdists.begin() + np, cdists.end());
+
+        for (int i = 0; i < np; i++)
+            for (int vid : inverted_lists[cdists[i].second])
+                candidates.push_back(vid);
     }
-    return -1;
+
+    // Max-heap: (distance, id). Top = largest distance seen among best-k.
+    // We keep at most k entries; replace the top whenever a closer vector is found.
+    using Entry = std::pair<float, int>;
+    std::priority_queue<Entry> heap;
+
+    for (int vid : candidates) {
+        float d = compute_dist(raw_vec_ptr(vid), qdata, dim, use_simd, metric);
+        if (static_cast<int>(heap.size()) < k) {
+            heap.emplace(d, vid);
+        } else if (d < heap.top().first) {
+            heap.pop();
+            heap.emplace(d, vid);
+        }
+    }
+
+    // Extract sorted nearest-first.
+    std::vector<std::pair<int, float>> results;
+    results.reserve(heap.size());
+    while (!heap.empty()) {
+        results.emplace_back(heap.top().second, heap.top().first);
+        heap.pop();
+    }
+    std::reverse(results.begin(), results.end());
+    return results;
 }

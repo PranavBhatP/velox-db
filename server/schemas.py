@@ -7,7 +7,7 @@ class VectorPayload(BaseModel):
 
 class TrainPayload(BaseModel):
     num_clusters: int
-    max_iters: int
+    epochs: int = 10
     metric: str = "eucl"
 
 
@@ -15,6 +15,8 @@ class SearchPayload(BaseModel):
     query_vector: list[float] | None = None
     query_text: str | None = None
     metric: str = "eucl"
+    k: int = Field(default=5, ge=1, le=100)
+    nprobe: int = Field(default=1, ge=1, le=100)
 
     @model_validator(mode="after")
     def require_query(self):

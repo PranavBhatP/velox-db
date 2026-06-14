@@ -1,52 +1,51 @@
 #pragma once
-#include<vector>
-#include<iostream>
+#include <vector>
+#include <iostream>
+#include <shared_mutex>
+#include <utility>
 
-class VectorIndex  {
-    public:
-        VectorIndex();
-        ~VectorIndex();
+class VectorIndex {
+public:
+    VectorIndex();
+    ~VectorIndex();
 
-        //add a vector into memory.
-        void add_vector(const std::vector<float> &vec);
+    void add_vector(const std::vector<float>& vec);
+    void load_fvecs(const std::string& filename);
+    void build_index(int num_clusters, int epochs = 10, const std::string& metric = "eucl");
+    void write_fvecs(const std::string& filename);
+    void save_index(const std::string& filename);
+    void load_index(const std::string& filename);
+    std::vector<float> get_vector(int index);
+    void set_simd(bool enable);
 
-        // load a binary .fvecs file into memory
-        // uses the fvecs standard.
-        void load_fvecs(const std::string &filename);
+    // Returns up to k nearest neighbors as (id, distance) pairs, sorted nearest-first.
+    // nprobe controls how many IVF clusters are probed (higher = better recall, slower).
+    std::vector<std::pair<int, float>> search(
+        const std::vector<float>& query,
+        int k = 1,
+        int nprobe = 1,
+        const std::string& metric = "eucl"
+    );
 
-        void build_index(int num_clusters, int epochs = 10, const std::string &metric = "eucl");
+private:
+    // Flat row-major storage: element [i][d] is at flat_database[i*dim + d].
+    // Contiguous layout gives cache-friendly SIMD access vs row-of-rows scatter.
+    std::vector<float> flat_database;
 
-        //save ram data to disk and brought back with mmap
-        void write_fvecs(const std::string &filename);
-        void save_index(const std::string &filename);
-        void load_index(const std::string &filename);
+    bool use_mmap = false;
+    void* mmap_ptr = nullptr;
+    size_t mmap_size = 0;
+    int dim = 0;
+    int num_vectors = 0;
+    bool is_indexed = false;
 
-        //get vector by index.
-        std::vector<float> get_vector(int index);
+    std::vector<std::vector<float>> centroids;
+    std::vector<std::vector<int>> inverted_lists;
+    bool use_simd = false;
 
-        void set_simd(bool enable);
+    mutable std::shared_mutex rw_mutex;
 
-        int search(const std::vector<float>& query, const std::string &metric = "eucl");
-    private:
-        std::vector<std::vector<float>> database;
-
-        bool use_mmap = false;
-        void *mmap_ptr = nullptr;
-        float* data_ptr = nullptr; //adding a typed pointer for direct acess.
-
-        size_t mmap_size = 0;
-        int dim = 0;
-        int num_vectors = 0;
-
-        bool is_indexed = false;
-
-        // centers of clusters (k vectors per cluster).
-        std::vector<std::vector<float>> centroids;
-
-        // This represents the buckets
-        // Maps [List_ID] -> [Vector ID, Vector ID, ...]
-        //i.e inverted_lists[0] contains all vectors belonging to cluster 0.
-        std::vector<std::vector<int>> inverted_lists; 
-
-        bool use_simd = false;
+    // Internal unlocked accessor — callers must already hold rw_mutex.
+    const float* raw_vec_ptr(int index) const;
+    std::vector<float> get_vector_nolock(int index) const;
 };

@@ -1,5 +1,7 @@
 import os
 import numpy as np
+import sys
+sys.path.append(os.path.abspath("build"))
 import veloxdb
 
 def test_persistence():

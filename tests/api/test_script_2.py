@@ -44,10 +44,10 @@ def test_mmap():
     # 4. Check Search
     # Query for a vector full of 50.0s -> Should return index 50
     query = [50.0] * dim
-    result = db.search(query)
-    print(f"Search for [50.0...], found index: {result}")
-    
-    assert result == 50
+    results = db.search(query, k=1, nprobe=1)
+    print(f"Search for [50.0...], found: {results}")
+    assert len(results) == 1
+    assert results[0][0] == 50
     print("✅ SUCCESS: Memory Mapping works!")
     
     # Cleanup

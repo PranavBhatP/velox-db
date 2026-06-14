@@ -208,7 +208,7 @@ def train_index(payload: TrainPayload):
     try:
         state.db.build_index(
             num_clusters=payload.num_clusters,
-            max_iters=payload.max_iters,
+            epochs=payload.epochs,
             metric=payload.metric,
         )
         state.is_indexed = True
@@ -227,13 +227,21 @@ def search(payload: SearchPayload):
         else:
             query_vector = payload.query_vector
         _check_dim(len(query_vector))
-        match_id = state.db.search(query_vector, metric=payload.metric)
-        meta = metadata.get(match_id)
-        result = {
-            "id": match_id,
-            "text": meta["text"] if meta else None,
-        }
-        return {"status": "success", "results": [result], "is_indexed": state.is_indexed}
+        matches = state.db.search(
+            query_vector,
+            k=payload.k,
+            nprobe=payload.nprobe,
+            metric=payload.metric,
+        )
+        results = []
+        for match_id, distance in matches:
+            meta = metadata.get(match_id)
+            results.append({
+                "id": match_id,
+                "text": meta["text"] if meta else None,
+                "distance": distance,
+            })
+        return {"status": "success", "results": results, "is_indexed": state.is_indexed}
     except HTTPException:
         raise
     except Exception as e:
