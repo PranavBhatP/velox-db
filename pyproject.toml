@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "veloxdb"
-version = "0.1.0"
+version = "0.2.0"
 description = "A high performance embedded vector database written in C++ with AVX2 Support"
 readme = "README.md"
 authors = [
