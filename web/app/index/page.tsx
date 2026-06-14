@@ -6,7 +6,7 @@ import { getHealth, trainIndex } from "@/lib/api";
 
 export default function TrainIndexPage() {
   const [numClusters, setNumClusters] = useState(10);
-  const [maxIters, setMaxIters] = useState(15);
+  const [epochs, setEpochs] = useState(15);
   const [metric, setMetric] = useState("eucl");
   const [vectorCount, setVectorCount] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -29,7 +29,7 @@ export default function TrainIndexPage() {
     setSuccess(null);
     setLoading(true);
     try {
-      const res = await trainIndex(numClusters, maxIters, metric);
+      const res = await trainIndex(numClusters, epochs, metric);
       setSuccess(res.message);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Training failed");
@@ -70,11 +70,11 @@ export default function TrainIndexPage() {
           onChange={(v) => setNumClusters(Number(v))}
         />
         <Field
-          label="Max iterations"
+          label="Epochs"
           type="number"
           min={1}
-          value={maxIters}
-          onChange={(v) => setMaxIters(Number(v))}
+          value={epochs}
+          onChange={(v) => setEpochs(Number(v))}
         />
         <div>
           <label className="text-sm text-velox-muted">Metric</label>

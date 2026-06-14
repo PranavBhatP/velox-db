@@ -8,6 +8,8 @@ import { searchByText, type SearchResult } from "@/lib/api";
 export default function SearchPage() {
   const [query, setQuery] = useState("");
   const [metric, setMetric] = useState("eucl");
+  const [k, setK] = useState(5);
+  const [nprobe, setNprobe] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -19,7 +21,7 @@ export default function SearchPage() {
     setResults([]);
     setLoading(true);
     try {
-      const res = await searchByText(query.trim(), metric);
+      const res = await searchByText(query.trim(), metric, k, nprobe);
       setResults(res.results);
       setIndexed(res.is_indexed);
     } catch (err) {
@@ -47,17 +49,46 @@ export default function SearchPage() {
           className="w-full rounded-md border border-velox-border bg-velox-card px-3 py-2 text-white"
           required
         />
-        <div className="flex items-center gap-3">
-          <label className="text-sm text-velox-muted">Metric</label>
-          <select
-            value={metric}
-            onChange={(e) => setMetric(e.target.value)}
-            className="rounded-md border border-velox-border bg-velox-card px-2 py-1 text-sm text-white"
-          >
-            <option value="eucl">Euclidean</option>
-            <option value="cos">Cosine</option>
-          </select>
+
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-velox-muted">Metric</label>
+            <select
+              value={metric}
+              onChange={(e) => setMetric(e.target.value)}
+              className="rounded-md border border-velox-border bg-velox-card px-2 py-1 text-sm text-white"
+            >
+              <option value="eucl">Euclidean</option>
+              <option value="cos">Cosine</option>
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-velox-muted">Top-k</label>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={k}
+              onChange={(e) => setK(Number(e.target.value))}
+              className="w-16 rounded-md border border-velox-border bg-velox-card px-2 py-1 text-sm text-white"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-velox-muted">nprobe</label>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={nprobe}
+              onChange={(e) => setNprobe(Number(e.target.value))}
+              className="w-16 rounded-md border border-velox-border bg-velox-card px-2 py-1 text-sm text-white"
+            />
+            <span className="text-xs text-velox-muted">clusters to probe</span>
+          </div>
         </div>
+
         <button
           type="submit"
           disabled={loading}
@@ -80,13 +111,22 @@ export default function SearchPage() {
 
       {results.length > 0 && (
         <div className="space-y-3">
-          <h2 className="text-lg font-medium text-white">Best match</h2>
-          {results.map((r) => (
+          <h2 className="text-lg font-medium text-white">
+            Top {results.length} result{results.length !== 1 ? "s" : ""}
+          </h2>
+          {results.map((r, rank) => (
             <div
               key={r.id}
               className="rounded-lg border border-velox-border bg-velox-card p-4"
             >
-              <p className="text-xs text-velox-muted">ID {r.id}</p>
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-velox-muted">
+                  #{rank + 1} · ID {r.id}
+                </p>
+                <p className="text-xs text-velox-muted">
+                  dist {r.distance.toFixed(4)}
+                </p>
+              </div>
               <p className="mt-2 whitespace-pre-wrap text-slate-200">
                 {r.text ?? "(no metadata for this vector)"}
               </p>
