@@ -352,6 +352,10 @@ python tests/api/test_script.py
 python -m server.main          # terminal 1 — http://localhost:8000
 cd web && npm install && npm run dev   # terminal 2 — http://localhost:3000
 ```
+### Benchmark results
+
+![benchmark](image.png)
+
 
 ## Contributing
 
