@@ -15,6 +15,9 @@ FetchContent_MakeAvailable(pybind11)
 
 add_library(veloxdb_core STATIC
     src/index.cpp
+    src/storage.cpp
+    src/ivf_index.cpp
+    src/hnsw_index.cpp
     src/metrics.cpp
 )
 
